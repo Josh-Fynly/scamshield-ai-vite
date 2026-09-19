@@ -1,25 +1,21 @@
-/**
- * Analyses data-access layer.
- *
- * Browser access to this table is only safe when Supabase Row Level
- * Security (RLS) policies correctly restrict rows to the authorised user.
- *
- * This module deliberately does not bypass RLS and never uses a service-role
- * key. Privileged database operations belong on trusted server-side code.
- */
-
 import { supabase } from './supabaseClient';
-import type { AnalysisResult, ThreatIndicator } from '../types';
+import type {
+  AnalysisResult,
+  PipelineStage,
+  RiskLevel,
+  ScanType,
+  ThreatIndicator,
+} from '../types';
 
 const TABLE = 'analyses';
 
 interface AnalysisRow {
   id: string;
-  user_id: string | null;
-  scan_type: AnalysisResult['scanType'];
+  user_id: string;
+  scan_type: ScanType;
   input_content: string | null;
   risk_score: number;
-  risk_level: AnalysisResult['riskLevel'];
+  risk_level: RiskLevel;
   threat_indicators: unknown;
   ai_explanation: string | null;
   recommended_action: string | null;
@@ -29,140 +25,88 @@ interface AnalysisRow {
 }
 
 function isThreatIndicator(value: unknown): value is ThreatIndicator {
-  if (typeof value !== 'object' || value === null) {
-    return false;
-  }
-
+  if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Record<string, unknown>;
-
-  return (
-    typeof candidate.name === 'string' &&
-    typeof candidate.detected === 'boolean' &&
-    (candidate.severity === 'low' ||
-      candidate.severity === 'medium' ||
-      candidate.severity === 'high') &&
-    typeof candidate.description === 'string'
-  );
+  return typeof candidate.name === 'string'
+    && typeof candidate.detected === 'boolean'
+    && (candidate.severity === 'low' || candidate.severity === 'medium' || candidate.severity === 'high')
+    && typeof candidate.description === 'string';
 }
 
-function parseThreatIndicators(value: unknown): ThreatIndicator[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.filter(isThreatIndicator);
+function isPipelineStages(value: unknown): value is AnalysisResult['pipelineStages'] {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  return Object.values(value as Record<string, unknown>).every((stage) => {
+    if (typeof stage !== 'object' || stage === null) return false;
+    const status = (stage as Record<string, unknown>).status;
+    return status === 'pending' || status === 'in_progress' || status === 'completed' || status === 'error';
+  });
 }
 
 function mapRowToAnalysis(row: AnalysisRow): AnalysisResult {
+  if (!row.user_id || !Array.isArray(row.threat_indicators) || !isPipelineStages(row.pipeline_stages)) {
+    throw new Error('Supabase returned an invalid analysis record.');
+  }
+  const indicators = row.threat_indicators.filter(isThreatIndicator);
+  if (indicators.length !== row.threat_indicators.length) {
+    throw new Error('Supabase returned malformed threat indicators.');
+  }
   return {
     id: row.id,
-    userId: row.user_id ?? undefined,
+    userId: row.user_id,
     scanType: row.scan_type,
     inputContent: row.input_content ?? '',
     riskScore: row.risk_score,
     riskLevel: row.risk_level,
-    threatIndicators: parseThreatIndicators(row.threat_indicators),
+    threatIndicators: indicators,
     aiExplanation: row.ai_explanation ?? '',
     recommendedAction: row.recommended_action ?? '',
-    confidenceLevel:
-      typeof row.confidence_level === 'number'
-        ? row.confidence_level
-        : 0,
-    pipelineStages:
-      (row.pipeline_stages ?? {}) as AnalysisResult['pipelineStages'],
+    confidenceLevel: row.confidence_level ?? 0,
+    pipelineStages: row.pipeline_stages,
     createdAt: row.created_at,
   };
 }
 
-/**
- * Fetch analyses visible to the current Supabase session.
- *
- * RLS is responsible for determining which rows the current client may read.
- */
+const SELECT_COLUMNS = 'id,user_id,scan_type,input_content,risk_score,risk_level,threat_indicators,ai_explanation,recommended_action,confidence_level,pipeline_stages,created_at';
+
+function requireSupabase() {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  return supabase;
+}
+
 export async function fetchAnalysesFromSupabase(): Promise<AnalysisResult[]> {
-  if (!supabase) {
-    throw new Error('Supabase is not configured.');
-  }
-
-  const { data, error } = await supabase
-    .from(TABLE)
-    .select(
-      'id,user_id,scan_type,input_content,risk_score,risk_level,threat_indicators,ai_explanation,recommended_action,confidence_level,pipeline_stages,created_at',
-    )
-    .order('created_at', { ascending: false });
-
-  if (error) {
-    throw error;
-  }
-
+  const client = requireSupabase();
+  const { data, error } = await client.from(TABLE).select(SELECT_COLUMNS).order('created_at', { ascending: false });
+  if (error) throw error;
   return ((data as AnalysisRow[] | null) ?? []).map(mapRowToAnalysis);
 }
 
-/**
- * Persist a completed analysis.
- *
- * The database/RLS layer must determine the authorised user identity.
- * No service-role credentials are used from the browser.
- */
-export async function persistAnalysisToSupabase(
-  scan: AnalysisResult,
-): Promise<void> {
-  if (!supabase) {
-    throw new Error('Supabase is not configured.');
-  }
-
-  const { error } = await supabase.from(TABLE).insert({
-    scan_type: scan.scanType,
-    input_content: scan.inputContent,
-    risk_score: scan.riskScore,
-    risk_level: scan.riskLevel,
-    threat_indicators: scan.threatIndicators,
-    ai_explanation: scan.aiExplanation,
-    recommended_action: scan.recommendedAction,
-    confidence_level: scan.confidenceLevel,
-    pipeline_stages: scan.pipelineStages,
-  });
-
-  if (error) {
-    throw error;
-  }
+export async function persistAnalysisToSupabase(scan: AnalysisResult): Promise<AnalysisResult> {
+  const client = requireSupabase();
+  const { data, error } = await client
+    .from(TABLE)
+    .insert({
+      scan_type: scan.scanType,
+      input_content: scan.inputContent,
+      risk_score: scan.riskScore,
+      risk_level: scan.riskLevel,
+      threat_indicators: scan.threatIndicators,
+      ai_explanation: scan.aiExplanation,
+      recommended_action: scan.recommendedAction,
+      confidence_level: scan.confidenceLevel,
+      pipeline_stages: scan.pipelineStages,
+    })
+    .select(SELECT_COLUMNS)
+    .single();
+  if (error) throw error;
+  if (!data) throw new Error('Supabase did not return the persisted analysis.');
+  return mapRowToAnalysis(data as AnalysisRow);
 }
 
-/**
- * Clear analyses for the current authorised scope.
- *
- * This operation relies entirely on RLS.
- *
- * There is intentionally no "delete everything except a sentinel UUID"
- * condition. A client must never receive a query that accidentally becomes
- * an unrestricted table-wide destructive operation.
- */
 export async function clearAnalysesInSupabase(): Promise<void> {
-  if (!supabase) {
-    return;
-  }
-
-  const { data: sessionData, error: sessionError } =
-    await supabase.auth.getSession();
-
-  if (sessionError) {
-    throw sessionError;
-  }
-
-  const userId = sessionData.session?.user.id;
-
-  if (!userId) {
-    throw new Error(
-      'You must be authenticated before clearing analysis history.',
-    );
-  }
-
-  const { error } = await supabase
-    .from(TABLE)
-    .delete()
-    .eq('user_id', userId);
-
-  if (error) {
-    throw error;
-  }
-    }
+  const client = requireSupabase();
+  const { data: sessionData, error: sessionError } = await client.auth.getSession();
+  if (sessionError) throw sessionError;
+  if (!sessionData.session?.user.id) throw new Error('You must be authenticated before clearing analysis history.');
+  const { error } = await client.from(TABLE).delete().eq('user_id', sessionData.session.user.id);
+  if (error) throw error;
+}
