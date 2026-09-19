@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { Activity, AlertTriangle, CheckCircle, Shield } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { Activity, AlertTriangle, ArrowRight, CheckCircle, Shield } from 'lucide-react';
 import { Card, CardContent, CardHeader, Badge } from '../components/ui';
 import { useScanStore } from '../stores/scanStore';
 import { formatRelativeTime } from '../lib/utils';
@@ -8,32 +9,7 @@ import { formatRelativeTime } from '../lib/utils';
 export function DashboardPage() {
   const { scans, isLoading, loadError, loadScans } = useScanStore();
   useEffect(() => { void loadScans(); }, [loadScans]);
-
-  const stats = useMemo(() => ({
-    total: scans.length,
-    safe: scans.filter((scan) => scan.riskLevel === 'safe').length,
-    suspicious: scans.filter((scan) => scan.riskLevel === 'suspicious').length,
-    highRisk: scans.filter((scan) => scan.riskLevel === 'high_risk').length,
-  }), [scans]);
-
-  return (
-    <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto">
-      <div className="mb-8">
-        <h1 className="text-2xl sm:text-3xl font-bold text-text-primary">Dashboard</h1>
-        <p className="text-text-secondary mt-1">Persisted threat intelligence overview</p>
-      </div>
-      {loadError && <div role="alert" className="mb-6 rounded-lg border border-danger-red/30 bg-danger-red/10 p-4 text-sm text-danger-red">{loadError}</div>}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        {[['Total Analyses', stats.total, Activity], ['Safe', stats.safe, CheckCircle], ['Suspicious', stats.suspicious, AlertTriangle], ['High Risk', stats.highRisk, Shield]].map(([label, value, Icon]) => (
-          <div key={String(label)} className="glass p-4"><div className="flex items-center gap-3"><Icon className="h-5 w-5 text-accent-blue" /><div><p className="text-2xl font-bold text-text-primary">{value}</p><p className="text-xs text-text-muted">{label}</p></div></div></div>
-        ))}
-      </div>
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between"><h3 className="text-sm font-semibold text-text-primary">Recent Analyses</h3><Link to="/scan" className="text-xs text-accent-blue">New scan</Link></CardHeader>
-        <CardContent>
-          {isLoading ? <p className="text-sm text-text-muted">Loading analyses…</p> : scans.length === 0 && !loadError ? <p className="text-sm text-text-muted">No persisted analyses yet.</p> : <div className="space-y-3">{scans.slice(0, 5).map((scan) => <div key={scan.id} className="flex items-center justify-between"><div className="min-w-0"><p className="truncate text-sm text-text-primary">{scan.inputContent.slice(0, 60)}</p><p className="text-xs text-text-muted">{formatRelativeTime(scan.createdAt)}</p></div><Badge riskLevel={scan.riskLevel} size="sm">{scan.riskScore}</Badge></div>)}</div>}
-        </CardContent>
-      </Card>
-    </div>
-  );
+  const stats = useMemo(() => { const scores = scans.map((scan) => scan.riskScore); return { total: scans.length, safe: scans.filter((scan) => scan.riskLevel === 'safe').length, suspicious: scans.filter((scan) => scan.riskLevel === 'suspicious').length, highRisk: scans.filter((scan) => scan.riskLevel === 'high_risk').length, average: scores.length ? Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length) : 0 }; }, [scans]);
+  const cards = [['Total Analyses', stats.total, Activity], ['Safe', stats.safe, CheckCircle], ['Suspicious', stats.suspicious, AlertTriangle], ['High Risk', stats.highRisk, Shield]] as const;
+  return <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto"><motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="mb-8"><h1 className="text-2xl sm:text-3xl font-bold text-text-primary">Dashboard</h1><p className="text-text-secondary mt-1">Persisted threat intelligence overview</p></motion.div>{loadError && <div role="alert" className="mb-6 rounded-lg border border-danger-red/30 bg-danger-red/10 p-4 text-sm text-danger-red">{loadError}</div>}<div className="mb-8 grid grid-cols-2 gap-4 lg:grid-cols-4">{cards.map(([label, value, Icon]) => <div key={label} className="glass p-4"><Icon className="mb-2 h-5 w-5 text-accent-blue" /><p className="text-2xl font-bold text-text-primary">{value}</p><p className="text-xs text-text-muted">{label}</p></div>)}</div><div className="grid gap-6 lg:grid-cols-2"><Card><CardHeader><h2 className="text-sm font-semibold text-text-primary">Detection Statistics</h2></CardHeader><CardContent className="space-y-2 text-sm text-text-secondary"><p>Average risk score: <strong className="text-text-primary">{stats.average}/100</strong></p><p>Average confidence: <strong className="text-text-primary">{scans.length ? (scans.reduce((sum, scan) => sum + scan.confidenceLevel, 0) / scans.length * 100).toFixed(1) : '0.0'}%</strong></p></CardContent></Card><Card><CardHeader className="flex flex-row items-center justify-between"><h2 className="text-sm font-semibold text-text-primary">Recent Analyses</h2><Link to="/history" className="flex items-center gap-1 text-xs text-accent-blue">View all <ArrowRight className="h-3 w-3" /></Link></CardHeader><CardContent>{isLoading ? <p className="text-sm text-text-muted">Loading analyses…</p> : scans.length === 0 && !loadError ? <p className="text-sm text-text-muted">No persisted analyses yet.</p> : <div className="space-y-3">{scans.slice(0, 5).map((scan) => <div key={scan.id} className="flex items-center justify-between"><div className="min-w-0"><p className="truncate text-sm text-text-primary">{scan.inputContent.slice(0, 60)}</p><p className="text-xs text-text-muted">{formatRelativeTime(scan.createdAt)}</p></div><Badge riskLevel={scan.riskLevel} size="sm">{scan.riskScore}</Badge></div>)}</div>}</CardContent></Card></div></div>;
 }
