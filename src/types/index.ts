@@ -13,6 +13,7 @@ export const PipelineStage = {
 } as const;
 
 export type PipelineStage = (typeof PipelineStage)[keyof typeof PipelineStage];
+
 export const PIPELINE_STAGES_ORDER: PipelineStage[] = [
   PipelineStage.INGESTING,
   PipelineStage.PARSING,
@@ -24,6 +25,7 @@ export const PIPELINE_STAGES_ORDER: PipelineStage[] = [
   PipelineStage.RECOMMENDATION_ENGINE,
   PipelineStage.REPORT_GENERATION,
 ];
+
 export const PIPELINE_STAGE_LABELS: Record<PipelineStage, string> = {
   [PipelineStage.INGESTING]: 'Ingesting',
   [PipelineStage.PARSING]: 'Parsing',
@@ -66,8 +68,14 @@ export interface AnalysisResult {
   confidenceLevel: number;
   pipelineStages: Partial<Record<PipelineStage, PipelineStageState>>;
   createdAt: string;
-  userId?: string;
+  userId: string;
 }
+
+export type AnalysisDraft = Omit<AnalysisResult, 'id' | 'createdAt' | 'userId'> & {
+  id?: never;
+  createdAt?: never;
+  userId?: never;
+};
 
 export interface AnalysisSummary {
   totalScans: number;
