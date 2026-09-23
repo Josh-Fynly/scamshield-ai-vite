@@ -1,17 +1,23 @@
 import { create } from 'zustand';
-import type { AnalysisResult, PipelineStage, ScanType } from '../types';
-import { SAMPLE_SCANS } from '../lib/constants';
+import type {
+  AnalysisDraft,
+  AnalysisResult,
+  PipelineStage,
+  RiskLevel,
+  ScanType,
+} from '../types';
 import {
   clearAnalysesInSupabase,
   fetchAnalysesFromSupabase,
   persistAnalysisToSupabase,
 } from '../lib/analysesApi';
 
-/** Local sample data used when Supabase isn't configured or can't be reached. */
-const FALLBACK_SCANS = [...SAMPLE_SCANS] as unknown as AnalysisResult[];
-
-// Hydrate from Supabase once per session. Locally-created scans are persisted,
-// so a second fetch on a later page mount isn't needed. Reset on clearHistory.
+/**
+ * Hydrate analyses from Supabase once for the current store lifecycle.
+ *
+ * This is an optimization only. Supabase remains the authoritative source
+ * of persisted analysis data.
+ */
 let hasLoaded = false;
 
 interface ScanState {
@@ -22,16 +28,16 @@ interface ScanState {
   currentScanId: string | null;
   currentPipelineStage: PipelineStage | null;
   pipelineProgress: number;
+
   loadScans: () => Promise<void>;
-  saveScan: (scan: AnalysisResult) => Promise<boolean>;
-  addScan: (scan: AnalysisResult) => void;
+  saveScan: (draft: AnalysisDraft) => Promise<AnalysisResult>;
   setScanning: (scanning: boolean) => void;
   setCurrentScanId: (id: string | null) => void;
   setCurrentPipelineStage: (stage: PipelineStage | null) => void;
   setPipelineProgress: (progress: number) => void;
   getScanById: (id: string) => AnalysisResult | undefined;
   getScansByType: (type: ScanType) => AnalysisResult[];
-  getScansByRiskLevel: (level: string) => AnalysisResult[];
+  getScansByRiskLevel: (level: RiskLevel) => AnalysisResult[];
   clearHistory: () => Promise<void>;
 }
 
@@ -45,60 +51,88 @@ export const useScanStore = create<ScanState>((set, get) => ({
   pipelineProgress: 0,
 
   loadScans: async () => {
-    if (hasLoaded) return;
-    set({ isLoading: true, loadError: null });
+    if (hasLoaded) {
+      return;
+    }
+
+    set({
+      isLoading: true,
+      loadError: null,
+    });
+
     try {
       const data = await fetchAnalysesFromSupabase();
+
       hasLoaded = true;
-      set({ scans: data, isLoading: false });
-    } catch (err) {
-      // Graceful fallback: show sample data locally instead of a blank page.
-      // hasLoaded stays false so a later retry can succeed.
+
       set({
-        scans: FALLBACK_SCANS,
-        loadError: err instanceof Error ? err.message : 'Could not load your analyses.',
+        scans: data,
+        isLoading: false,
+        loadError: null,
+      });
+    } catch (err) {
+      set({
+        scans: [],
+        loadError:
+          err instanceof Error
+            ? err.message
+            : 'Could not load your analyses.',
         isLoading: false,
       });
     }
   },
 
-  saveScan: async (scan) => {
-    // Add locally first so the UI updates instantly, then persist to the cloud.
-    set((state) => ({ scans: [scan, ...state.scans] }));
-    try {
-      await persistAnalysisToSupabase(scan);
-      return true;
-    } catch (err) {
-      console.warn('[scanStore] Failed to persist analysis to Supabase:', err);
-      return false;
-    }
+  saveScan: async (draft) => {
+    const persistedScan = await persistAnalysisToSupabase(draft);
+
+    set((state) => ({
+      scans: [
+        persistedScan,
+        ...state.scans.filter((scan) => scan.id !== persistedScan.id),
+      ],
+      loadError: null,
+    }));
+
+    return persistedScan;
   },
 
-  addScan: (scan) =>
-    set((state) => ({ scans: [scan, ...state.scans] })),
+  setScanning: (scanning) =>
+    set({
+      isScanning: scanning,
+    }),
 
-  setScanning: (scanning) => set({ isScanning: scanning }),
+  setCurrentScanId: (id) =>
+    set({
+      currentScanId: id,
+    }),
 
-  setCurrentScanId: (id) => set({ currentScanId: id }),
+  setCurrentPipelineStage: (stage) =>
+    set({
+      currentPipelineStage: stage,
+    }),
 
-  setCurrentPipelineStage: (stage) => set({ currentPipelineStage: stage }),
+  setPipelineProgress: (progress) =>
+    set({
+      pipelineProgress: progress,
+    }),
 
-  setPipelineProgress: (progress) => set({ pipelineProgress: progress }),
+  getScanById: (id) =>
+    get().scans.find((scan) => scan.id === id),
 
-  getScanById: (id) => get().scans.find((s) => s.id === id),
+  getScansByType: (type) =>
+    get().scans.filter((scan) => scan.scanType === type),
 
-  getScansByType: (type) => get().scans.filter((s) => s.scanType === type),
-
-  getScansByRiskLevel: (level) => get().scans.filter((s) => s.riskLevel === level),
+  getScansByRiskLevel: (level) =>
+    get().scans.filter((scan) => scan.riskLevel === level),
 
   clearHistory: async () => {
-    set({ scans: [] });
+    await clearAnalysesInSupabase();
+
     hasLoaded = false;
-    try {
-      await clearAnalysesInSupabase();
-    } catch (err) {
-      console.warn('[scanStore] Failed to clear analyses on Supabase:', err);
-    }
+
+    set({
+      scans: [],
+      loadError: null,
+    });
   },
 }));
-    
