@@ -12,14 +12,6 @@ import {
   persistAnalysisToSupabase,
 } from '../lib/analysesApi';
 
-/**
- * Hydrate analyses from Supabase once for the current store lifecycle.
- *
- * This is an optimization only. Supabase remains the authoritative source
- * of persisted analysis data.
- */
-let hasLoaded = false;
-
 interface ScanState {
   scans: AnalysisResult[];
   isLoading: boolean;
@@ -28,9 +20,11 @@ interface ScanState {
   currentScanId: string | null;
   currentPipelineStage: PipelineStage | null;
   pipelineProgress: number;
-
+  currentUserId: string | null;
+  hasLoadedForCurrentUser: boolean;
   loadScans: () => Promise<void>;
   saveScan: (draft: AnalysisDraft) => Promise<AnalysisResult>;
+  resetForUser: (userId: string | null) => void;
   setScanning: (scanning: boolean) => void;
   setCurrentScanId: (id: string | null) => void;
   setCurrentPipelineStage: (stage: PipelineStage | null) => void;
@@ -41,6 +35,8 @@ interface ScanState {
   clearHistory: () => Promise<void>;
 }
 
+let hydrationRequestId = 0;
+
 export const useScanStore = create<ScanState>((set, get) => ({
   scans: [],
   isLoading: false,
@@ -49,11 +45,28 @@ export const useScanStore = create<ScanState>((set, get) => ({
   currentScanId: null,
   currentPipelineStage: null,
   pipelineProgress: 0,
+  currentUserId: null,
+  hasLoadedForCurrentUser: false,
 
   loadScans: async () => {
-    if (hasLoaded) {
+    const userIdAtStart = get().currentUserId;
+
+    if (!userIdAtStart) {
+      set({
+        scans: [],
+        isLoading: false,
+        loadError: null,
+        hasLoadedForCurrentUser: false,
+      });
+
       return;
     }
+
+    if (get().hasLoadedForCurrentUser) {
+      return;
+    }
+
+    const requestId = ++hydrationRequestId;
 
     set({
       isLoading: true,
@@ -63,14 +76,31 @@ export const useScanStore = create<ScanState>((set, get) => ({
     try {
       const data = await fetchAnalysesFromSupabase();
 
-      hasLoaded = true;
+      const currentState = get();
+
+      if (
+        currentState.currentUserId !== userIdAtStart ||
+        requestId !== hydrationRequestId
+      ) {
+        return;
+      }
 
       set({
         scans: data,
         isLoading: false,
         loadError: null,
+        hasLoadedForCurrentUser: true,
       });
     } catch (err) {
+      const currentState = get();
+
+      if (
+        currentState.currentUserId !== userIdAtStart ||
+        requestId !== hydrationRequestId
+      ) {
+        return;
+      }
+
       set({
         scans: [],
         loadError:
@@ -78,12 +108,25 @@ export const useScanStore = create<ScanState>((set, get) => ({
             ? err.message
             : 'Could not load your analyses.',
         isLoading: false,
+        hasLoadedForCurrentUser: false,
       });
     }
   },
 
   saveScan: async (draft) => {
+    const userIdAtStart = get().currentUserId;
+
+    if (!userIdAtStart) {
+      throw new Error('You must be authenticated to save an analysis.');
+    }
+
     const persistedScan = await persistAnalysisToSupabase(draft);
+
+    const currentState = get();
+
+    if (currentState.currentUserId !== userIdAtStart) {
+      return persistedScan;
+    }
 
     set((state) => ({
       scans: [
@@ -96,43 +139,5 @@ export const useScanStore = create<ScanState>((set, get) => ({
     return persistedScan;
   },
 
-  setScanning: (scanning) =>
-    set({
-      isScanning: scanning,
-    }),
-
-  setCurrentScanId: (id) =>
-    set({
-      currentScanId: id,
-    }),
-
-  setCurrentPipelineStage: (stage) =>
-    set({
-      currentPipelineStage: stage,
-    }),
-
-  setPipelineProgress: (progress) =>
-    set({
-      pipelineProgress: progress,
-    }),
-
-  getScanById: (id) =>
-    get().scans.find((scan) => scan.id === id),
-
-  getScansByType: (type) =>
-    get().scans.filter((scan) => scan.scanType === type),
-
-  getScansByRiskLevel: (level) =>
-    get().scans.filter((scan) => scan.riskLevel === level),
-
-  clearHistory: async () => {
-    await clearAnalysesInSupabase();
-
-    hasLoaded = false;
-
-    set({
-      scans: [],
-      loadError: null,
-    });
-  },
-}));
+  resetForUser: (userId) => {
+    hydration
